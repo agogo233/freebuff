@@ -1,4 +1,12 @@
-name: Build & Release
+name: Public CI
+
+# Build and smoke-test the exported public tree on every PR.
+#
+# This workflow was written alongside the export scripts but never reached the
+# public repo: it sat in scripts/public-export/github-workflows/, which neither
+# the manifest nor sync-public-repo.sh reads. The repo therefore had no CI at
+# all while CONTRIBUTING.md claimed "Public CI validates the exported public
+# packages". Moving it under public-export/root/ is what actually ships it.
 
 on:
   push:
@@ -7,19 +15,15 @@ on:
     branches: [main]
 
 concurrency:
-  group: build-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
-
-permissions:
-  contents: read
+  group: public-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  build-linux-x64:
+  build-and-test:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -32,14 +36,7 @@ jobs:
         run: bun run build:sdk
 
       - name: Build Freebuff binary
-        run: |
-          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            VERSION="${GITHUB_REF_NAME#v}"
-          else
-            VERSION="0.0.0-${GITHUB_RUN_NUMBER}"
-          fi
-          echo "Building version: $VERSION"
-          bun freebuff/cli/build.ts "$VERSION"
+        run: bun freebuff/cli/build.ts 0.0.0-ci
 
       - name: Smoke test Freebuff binary
         env:
@@ -55,16 +52,3 @@ jobs:
           chmod +x cli/bin/freebuff
           cli/bin/freebuff --version
           bun cli/scripts/smoke-binary.ts cli/bin/freebuff
-
-      - name: Package artifact
-        run: |
-          mkdir -p dist/freebuff-linux-x64
-          cp cli/bin/freebuff dist/freebuff-linux-x64/
-          cp cli/bin/tree-sitter.wasm dist/freebuff-linux-x64/
-          ls -la dist/freebuff-linux-x64/
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: freebuff-linux-x64
-          path: dist/freebuff-linux-x64/*
-          retention-days: 90
