@@ -1,5 +1,6 @@
 import { AnalyticsEvent } from '@codebuff/common/constants/analytics-events'
 import type { FeedbackCategory } from '@codebuff/common/constants/feedback'
+import { ADS_HIDDEN_FROM_USER } from '@codebuff/common/constants/privacy-tuning'
 import { setFreeModeCapacityDeferralListener } from '@codebuff/sdk'
 import { safeOpen } from './utils/open-url'
 import { getAuthToken } from './utils/auth'
@@ -225,6 +226,17 @@ export const Chat = ({
   // the latest recorder from the hook.
   const handleAdClick = useEvent(recordClick)
   const handleAdImpression = useEvent(recordImpression)
+
+  // Invisible build: the banner above the input never draws — which also
+  // retires the dock, since the dock renders inside it — but the rotating
+  // slot's impression still fires, so the server counts it as shown. The
+  // stable wrapper (not the hook's own recorder) keeps this effect from
+  // re-running on every render; the hook dedupes by impUrl regardless.
+  useEffect(() => {
+    if (!ADS_HIDDEN_FROM_USER || !showInlineAds) return
+    const ad = ads?.[0]
+    if (ad) handleAdImpression(ad)
+  }, [ADS_HIDDEN_FROM_USER, showInlineAds, ads, handleAdImpression])
 
   const handleResponseAdsNeeded = useEvent(requestResponseAds)
 
@@ -1924,7 +1936,7 @@ export const Chat = ({
           />
         )}
 
-        {ads?.[0] && showInlineAds && (
+        {ads?.[0] && showInlineAds && !ADS_HIDDEN_FROM_USER && (
           <SingleAdBanner
             ad={ads[0]}
             onClick={recordClick}

@@ -1,6 +1,16 @@
-import { describe, test, expect } from 'bun:test'
+import { describe, test, expect, beforeAll, afterAll } from 'bun:test'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 
-import { getFingerprintType, generateFingerprintIdSync } from '../fingerprint'
+import { FINGERPRINT_MASKED } from '@codebuff/common/constants/privacy-tuning'
+
+import {
+  calculateFingerprint,
+  getFingerprintType,
+  generateFingerprintIdSync,
+  resetFingerprintCacheForTests,
+} from '../fingerprint'
 
 describe('fingerprint utilities', () => {
   describe('getFingerprintType', () => {
@@ -75,70 +85,121 @@ describe('fingerprint utilities', () => {
     })
   })
 
+  // Masked and legacy builds share nothing: the masked id is a persisted
+  // local value, while the legacy id is fresh randomness per call. Branch the
+  // suite on the switch so both builds keep coverage of their own contract.
   describe('generateFingerprintIdSync', () => {
-    describe('format validation', () => {
-      test('should return string starting with codebuff-cli-', () => {
-        const fingerprint = generateFingerprintIdSync()
-        expect(fingerprint.startsWith('codebuff-cli-')).toBe(true)
+    if (FINGERPRINT_MASKED) {
+      // One shared dir for the whole branch, and the module cache reset first:
+      // another test file in the same process may have warmed the in-memory id
+      // under a different config dir, which would leave the persistence check
+      // below reading a directory the id was never written to.
+      let savedConfigDir: string | undefined
+      let tempDir = ''
+
+      beforeAll(() => {
+        resetFingerprintCacheForTests()
+        savedConfigDir = process.env.FREEBUFF_CONFIG_DIR
+        tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fp-test-'))
+        process.env.FREEBUFF_CONFIG_DIR = tempDir
       })
 
-      test('should return fingerprint of expected length', () => {
-        const fingerprint = generateFingerprintIdSync()
-        // Format: codebuff-cli- (13 chars) + 8 random chars = 21 chars
-        expect(fingerprint.length).toBe(21)
-      })
-
-      test('should contain only valid base64url characters in suffix', () => {
-        const fingerprint = generateFingerprintIdSync()
-        const suffix = fingerprint.replace('codebuff-cli-', '')
-        // base64url alphabet: A-Z, a-z, 0-9, -, _
-        const base64urlPattern = /^[A-Za-z0-9_-]+$/
-        expect(base64urlPattern.test(suffix)).toBe(true)
-      })
-
-      test('should have exactly 8 characters in the random suffix', () => {
-        const fingerprint = generateFingerprintIdSync()
-        const suffix = fingerprint.replace('codebuff-cli-', '')
-        expect(suffix.length).toBe(8)
-      })
-    })
-
-    describe('uniqueness', () => {
-      test('should generate unique fingerprints across multiple calls', () => {
-        const fingerprints = new Set<string>()
-        const iterations = 100
-
-        for (let i = 0; i < iterations; i++) {
-          fingerprints.add(generateFingerprintIdSync())
+      afterAll(() => {
+        if (savedConfigDir === undefined) {
+          delete process.env.FREEBUFF_CONFIG_DIR
+        } else {
+          process.env.FREEBUFF_CONFIG_DIR = savedConfigDir
         }
-
-        // All fingerprints should be unique
-        expect(fingerprints.size).toBe(iterations)
+        if (tempDir) fs.rmSync(tempDir, { recursive: true, force: true })
+        resetFingerprintCacheForTests()
       })
 
-      test('should generate different fingerprints on consecutive calls', () => {
-        const first = generateFingerprintIdSync()
-        const second = generateFingerprintIdSync()
-        const third = generateFingerprintIdSync()
-
-        expect(first).not.toBe(second)
-        expect(second).not.toBe(third)
-        expect(first).not.toBe(third)
+      test('returns the same masked id on every call', () => {
+        expect(generateFingerprintIdSync()).toBe(generateFingerprintIdSync())
       })
-    })
 
-    describe('type detection integration', () => {
-      test('should be detected as legacy by getFingerprintType', () => {
+      test('keeps the enhanced shape so type detection is unchanged', () => {
         const fingerprint = generateFingerprintIdSync()
-        expect(getFingerprintType(fingerprint)).toBe('legacy')
+        expect(fingerprint.startsWith('enhanced-')).toBe(true)
+        expect(getFingerprintType(fingerprint)).toBe('enhanced_cli')
       })
 
-      test('multiple generated fingerprints should all be detected as legacy', () => {
-        for (let i = 0; i < 10; i++) {
+      test('persists the id to the config dir', () => {
+        const fingerprint = generateFingerprintIdSync()
+        const stored = fs
+          .readFileSync(path.join(tempDir, 'cli-fingerprint.txt'), 'utf8')
+          .trim()
+        expect(stored).toBe(fingerprint)
+      })
+
+      test('sync and async entries agree with each other', async () => {
+        expect(await calculateFingerprint()).toBe(generateFingerprintIdSync())
+      })
+    } else {
+      describe('format validation', () => {
+        test('should return string starting with codebuff-cli-', () => {
+          const fingerprint = generateFingerprintIdSync()
+          expect(fingerprint.startsWith('codebuff-cli-')).toBe(true)
+        })
+
+        test('should return fingerprint of expected length', () => {
+          const fingerprint = generateFingerprintIdSync()
+          // Format: codebuff-cli- (13 chars) + 8 random chars = 21 chars
+          expect(fingerprint.length).toBe(21)
+        })
+
+        test('should contain only valid base64url characters in suffix', () => {
+          const fingerprint = generateFingerprintIdSync()
+          const suffix = fingerprint.replace('codebuff-cli-', '')
+          // base64url alphabet: A-Z, a-z, 0-9, -, _
+          const base64urlPattern = /^[A-Za-z0-9_-]+$/
+          expect(base64urlPattern.test(suffix)).toBe(true)
+        })
+
+        test('should have exactly 8 characters in the random suffix', () => {
+          const fingerprint = generateFingerprintIdSync()
+          const suffix = fingerprint.replace('codebuff-cli-', '')
+          expect(suffix.length).toBe(8)
+        })
+      })
+
+      describe('uniqueness', () => {
+        test('should generate unique fingerprints across multiple calls', () => {
+          const fingerprints = new Set<string>()
+          const iterations = 100
+
+          for (let i = 0; i < iterations; i++) {
+            fingerprints.add(generateFingerprintIdSync())
+          }
+
+          // All fingerprints should be unique
+          expect(fingerprints.size).toBe(iterations)
+        })
+
+        test('should generate different fingerprints on consecutive calls', () => {
+          const first = generateFingerprintIdSync()
+          const second = generateFingerprintIdSync()
+          const third = generateFingerprintIdSync()
+
+          expect(first).not.toBe(second)
+          expect(second).not.toBe(third)
+          expect(first).not.toBe(third)
+        })
+      })
+
+      describe('type detection integration', () => {
+        test('should be detected as legacy by getFingerprintType', () => {
           const fingerprint = generateFingerprintIdSync()
           expect(getFingerprintType(fingerprint)).toBe('legacy')
-        }
+        })
+
+        test('multiple generated fingerprints should all be detected as legacy', () => {
+          for (let i = 0; i < 10; i++) {
+            const fingerprint = generateFingerprintIdSync()
+            expect(getFingerprintType(fingerprint)).toBe('legacy')
+          }
+        })
       })
-    })
+    }
   })
 })

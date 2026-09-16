@@ -1,5 +1,6 @@
 import { PostHog } from 'posthog-node'
 
+import { TELEMETRY_DISABLED } from './constants/privacy-tuning'
 import { createExceptionBeforeSend } from './util/exception-budget'
 
 /**
@@ -52,6 +53,20 @@ export interface PostHogClientOptions {
 }
 
 /**
+ * Returned when telemetry is switched off. A stub rather than a real client is
+ * load-bearing: `new PostHog` installs uncaught-exception handlers as a side
+ * effect of construction, so the only way to disable exception autocapture is to
+ * never construct the client at all. `flush` stays async to match the contract.
+ */
+const NOOP_ANALYTICS_CLIENT: AnalyticsClientWithIdentify = {
+  capture: () => undefined,
+  flush: async () => undefined,
+  identify: () => undefined,
+  alias: () => undefined,
+  captureException: () => undefined,
+}
+
+/**
  * Default PostHog client factory.
  * Creates a real PostHog client instance.
  *
@@ -60,11 +75,17 @@ export interface PostHogClientOptions {
  * ways an exception reaches PostHog — `captureException` from the CLI's error
  * logger and `enableExceptionAutocapture`'s uncaught/unhandled handlers — run
  * `before_send`. See util/exception-budget.ts for what a loop costs without it.
+ *
+ * `TELEMETRY_DISABLED` short-circuits before construction, which is what makes
+ * this the one choke point for every analytics surface in the CLI: the common
+ * `trackEvent`, the CLI `trackEvent`/`identify`/`captureException`, and the
+ * SDK runtime wrapper all resolve to a client made here.
  */
 export function createPostHogClient(
   apiKey: string,
   options: PostHogClientOptions,
 ): AnalyticsClientWithIdentify {
+  if (TELEMETRY_DISABLED) return NOOP_ANALYTICS_CLIENT
   return new PostHog(apiKey, {
     ...options,
     before_send: createExceptionBeforeSend(),

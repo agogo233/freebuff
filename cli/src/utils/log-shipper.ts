@@ -1,3 +1,4 @@
+import { LOG_SHIPPING_DISABLED } from '@codebuff/common/constants/privacy-tuning'
 import { IS_DEV, IS_TEST, IS_CI } from '@codebuff/common/env'
 
 import { getApiClient } from './codebuff-api'
@@ -13,6 +14,8 @@ import type { LogRecordInput } from '@codebuff/common/schemas/logs'
  *
  * Tuning via env:
  *  - CODEBUFF_SHIP_LOGS 'true' | 'false'  (default: on outside dev/test)
+ *  - LOG_SHIPPING_DISABLED 'true' takes precedence over all of the above
+ *    (see @codebuff/common/constants/privacy-tuning)
  */
 
 const MAX_BATCH = 50
@@ -78,6 +81,10 @@ const clientLogFlusher = createClientLogFlusher({
 })
 
 function enabled(): boolean {
+  // The fork switch wins over CODEBUFF_SHIP_LOGS so an env var cannot silently
+  // re-enable a channel the build decided to drop. Roll back with
+  // LOG_SHIPPING_DISABLED=false.
+  if (LOG_SHIPPING_DISABLED) return false
   const flag = getCliEnv().CODEBUFF_SHIP_LOGS
   if (flag === 'true') return true
   if (flag === 'false') return false

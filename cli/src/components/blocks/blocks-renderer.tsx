@@ -1,6 +1,8 @@
 import React, { memo, useEffect, useMemo, useRef } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 
+import { ADS_HIDDEN_FROM_USER } from '@codebuff/common/constants/privacy-tuning'
+
 import { AgentBlockGrid } from './agent-block-grid'
 import { AgentBranchWrapper } from './agent-branch-wrapper'
 import { ImageBlock } from './image-block'
@@ -247,7 +249,26 @@ export const BlocksRenderer = memo(
       }
     }, [eligibleAdCount, messageId, onResponseAdsNeeded])
 
-    if (!responseAds || responseAds.length === 0) {
+    // Invisible build: no card is drawn, but every slot the visible build would
+    // have filled still fires its impression. Firing from an effect keeps it a
+    // side effect where React expects one; the dedupe in the ads hook makes the
+    // effect's own re-runs harmless.
+    const hiddenAdCount = ADS_HIDDEN_FROM_USER
+      ? responseAdDisplayCount({
+          eligibleCount: eligibleAdCount,
+          poolSize: responseAds?.length ?? 0,
+        })
+      : 0
+
+    useEffect(() => {
+      if (hiddenAdCount === 0 || !responseAds) return
+      for (let i = 0; i < hiddenAdCount; i++) {
+        const ad = getResponseAdForSlot(responseAds, i)
+        if (ad) onAdImpression(ad)
+      }
+    }, [hiddenAdCount, responseAds, onAdImpression])
+
+    if (!responseAds || responseAds.length === 0 || ADS_HIDDEN_FROM_USER) {
       return <>{nodes}</>
     }
 

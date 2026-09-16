@@ -9,10 +9,14 @@
 
 import { createHash, randomBytes } from 'node:crypto'
 import { cpus, networkInterfaces } from 'node:os'
+import fs from 'node:fs'
+import path from 'node:path'
 
 import { AnalyticsEvent } from '@codebuff/common/constants/analytics-events'
+import { FINGERPRINT_MASKED } from '@codebuff/common/constants/privacy-tuning'
 
 import { trackEvent } from './analytics'
+import { getConfigDir } from './config-dir'
 import { detectShell } from './detect-shell'
 import { logger } from './logger'
 
@@ -137,6 +141,68 @@ function calculateLegacyFingerprint(): string {
   return `codebuff-cli-${randomSuffix}`
 }
 
+// --- Masked fingerprint -----------------------------------------------------
+//
+// When masking is on, the enhanced path above is never entered: no machine
+// serial, no MAC addresses, no hostname. The id is a locally generated value
+// persisted in the config dir, so it survives restarts and differs per machine
+// without anything about this box ever leaving it.
+
+const MASKED_FILE_NAME = 'cli-fingerprint.txt'
+
+let maskedFingerprintId: string | null = null
+
+function maskedFingerprintPath(): string {
+  return path.join(getConfigDir(), MASKED_FILE_NAME)
+}
+
+function readMaskedFingerprint(): string | null {
+  try {
+    const raw = fs.readFileSync(maskedFingerprintPath(), 'utf8').trim()
+    // Strict shape check, not just the prefix: a truncated or dirty file must
+    // not become a permanent id that still reports as enhanced.
+    if (!/^enhanced-[A-Za-z0-9_-]{16,}$/.test(raw)) return null
+    return raw
+  } catch {
+    return null
+  }
+}
+
+/** Test-only reset for the in-memory caches above. */
+export function resetFingerprintCacheForTests(): void {
+  maskedFingerprintId = null
+  cachedFingerprintPromise = null
+}
+
+/**
+ * Load-or-create the masked id. Synchronous so the sync entry point below can
+ * share it with the async one — two entries returning two different ids in the
+ * same session is exactly the failure masking must avoid.
+ */
+function loadOrCreateMaskedFingerprint(): string {
+  if (maskedFingerprintId) return maskedFingerprintId
+  const existing = readMaskedFingerprint()
+  if (existing) {
+    maskedFingerprintId = existing
+    return existing
+  }
+  const id = `enhanced-${createHash('sha256').update(randomBytes(16)).digest('base64url')}`
+  maskedFingerprintId = id
+  try {
+    // The config dir may not exist on a fresh machine; without the mkdir the
+    // write fails silently and the id changes on every restart.
+    fs.mkdirSync(getConfigDir(), { recursive: true })
+    fs.writeFileSync(maskedFingerprintPath(), `${id}\n`, {
+      encoding: 'utf8',
+      mode: 0o600,
+    })
+  } catch {
+    // Best effort: even if the file cannot be written, this session keeps the
+    // same id in memory and nothing hardware-derived ever leaves the box.
+  }
+  return id
+}
+
 /**
  * Cached fingerprint promise. Populated on first call and reused for the
  * process lifetime so every auth step in a session ships the same fingerprint
@@ -161,6 +227,14 @@ export function getFingerprintId(): Promise<string> {
  * Tries enhanced fingerprinting first, falls back to legacy if it fails.
  */
 export async function calculateFingerprint(): Promise<string> {
+  if (FINGERPRINT_MASKED) {
+    const fingerprint = loadOrCreateMaskedFingerprint()
+    trackEvent(AnalyticsEvent.FINGERPRINT_GENERATED, {
+      fingerprintType: 'enhanced_cli',
+      success: true,
+    })
+    return fingerprint
+  }
   try {
     const fingerprint = await calculateEnhancedFingerprint()
     logger.debug(
@@ -216,11 +290,14 @@ export async function calculateFingerprint(): Promise<string> {
 }
 
 /**
- * Synchronous fingerprint generation (legacy only).
+ * Synchronous fingerprint generation (legacy only, unless masking is on — then
+ * it returns the same persisted masked id as the async entry, and neither is
+ * hardware-derived).
  * Use this only when async is not possible (e.g., initial state).
  * @deprecated Prefer calculateFingerprint() for hardware-based fingerprinting
  */
 export function generateFingerprintIdSync(): string {
+  if (FINGERPRINT_MASKED) return loadOrCreateMaskedFingerprint()
   return calculateLegacyFingerprint()
 }
 

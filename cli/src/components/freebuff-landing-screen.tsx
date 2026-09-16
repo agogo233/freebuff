@@ -11,8 +11,13 @@ import {
   freebucksPriceLabel,
 } from '../utils/freebucks'
 import { Button } from './button'
-import { ChoiceAdBanner, AD_CARD_HEIGHT } from './ad-banner'
+import {
+  ChoiceAdBanner,
+  AD_CARD_HEIGHT,
+  orderedRequestedAds,
+} from './ad-banner'
 import { visibleWaitingRoomPlacementIds } from '@codebuff/common/ads/waiting-room-placements'
+import { ADS_HIDDEN_FROM_USER } from '@codebuff/common/constants/privacy-tuning'
 import { FreebucksIntroCard, useFreebucksIntro } from './freebucks-intro-card'
 import { FreebuffModelSelector } from './freebuff-model-selector'
 import { ShimmerText } from './shimmer-text'
@@ -393,7 +398,9 @@ export const FreebuffLandingScreen: React.FC<FreebuffLandingScreenProps> = ({
       !hasReferralMenu &&
       terminalHeight >= COLLAPSED_LOGO_MIN_HEIGHT)
   const compact = terminalHeight < 22
-  const showAds = terminalHeight >= 18
+  // The layout budget below reads this too, so hiding the cards also hands the
+  // picker back the five rows the banner reserved.
+  const showAds = terminalHeight >= 18 && !ADS_HIDDEN_FROM_USER
   const textMarginBottom = 1
 
   const [sheenPosition, setSheenPosition] = useState(0)
@@ -431,6 +438,18 @@ export const FreebuffLandingScreen: React.FC<FreebuffLandingScreenProps> = ({
     surface: 'waiting_room',
     placementIds: waitingRoomPlacementIds,
   })
+
+  // Invisible build: the cards never mount, so the impression effect inside
+  // AdCard never runs. Fire it here instead, over the same ordered selection
+  // the visible banner would have shown — the ledger still counts every slot
+  // as shown, and the dedupe in the hook keeps repeated renders
+  // single-counted.
+  useEffect(() => {
+    if (!ADS_HIDDEN_FROM_USER) return
+    for (const ad of orderedRequestedAds(ads ?? [], waitingRoomPlacementIds)) {
+      recordImpression(ad)
+    }
+  }, [ADS_HIDDEN_FROM_USER, ads, waitingRoomPlacementIds, recordImpression])
 
   useFreebuffCtrlCExit()
 
